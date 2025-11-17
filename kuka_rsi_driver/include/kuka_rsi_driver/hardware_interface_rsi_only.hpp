@@ -19,12 +19,11 @@
 #include <vector>
 
 #include "hardware_interface/system_interface.hpp"
+#include "rclcpp/logger.hpp"
 #include "rclcpp/macros.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
 #include "kuka/external-control-sdk/kss/robot.h"
-#include "kuka_drivers_core/control_mode.hpp"
 #include "kuka_rsi_driver/visibility_control.h"
 
 using hardware_interface::return_type;
@@ -69,7 +68,7 @@ public:
 private:
   KUKA_RSI_DRIVER_LOCAL bool SetupRobot();
 
-  KUKA_RSI_DRIVER_LOCAL void Read(const int64_t request_timeout);
+  KUKA_RSI_DRIVER_LOCAL bool Read(const int64_t request_timeout);
 
   KUKA_RSI_DRIVER_LOCAL void Write();
 
@@ -96,6 +95,7 @@ private:
   bool is_active_;
   bool msg_received_;
   bool stop_requested_;
+  bool blocking_read_;
 
   static constexpr int64_t READ_TIMEOUT_MS = 1'000;
 };

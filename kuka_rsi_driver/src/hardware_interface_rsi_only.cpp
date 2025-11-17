@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "rclcpp/logging.hpp"
 
 #include "kuka_drivers_core/hardware_interface_types.hpp"
 #include "kuka_rsi_driver/hardware_interface_rsi_only.hpp"
@@ -39,6 +41,33 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
     {
       return CallbackReturn::ERROR;
     }
+  }
+
+  if (info.hardware_parameters.count("blocking_read") == 0)
+  {
+    RCLCPP_FATAL(logger_, "must set `blocking_read` parameter");
+    return CallbackReturn::ERROR;
+  }
+  auto blocking_read_string = info.hardware_parameters.at("blocking_read");
+  // turn the param string to lower case to allow True or FALSE etc.
+  std::transform(
+    blocking_read_string.begin(), blocking_read_string.end(), blocking_read_string.begin(),
+    ::tolower);
+
+  if (blocking_read_string == "true")
+  {
+    blocking_read_ = true;
+  }
+  else if (blocking_read_string == "false")
+  {
+    blocking_read_ = false;
+  }
+  else
+  {
+    RCLCPP_FATAL(
+      logger_, "`blocking_read` parameter must be 'true' or 'false', got: '%s'",
+      blocking_read_string.c_str());
+    return CallbackReturn::ERROR;
   }
 
   // Check gpio components size
@@ -137,9 +166,14 @@ CallbackReturn KukaRSIHardwareInterface::on_configure(const rclcpp_lifecycle::St
 
 CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 {
-  stop_requested_ = false;
+  // 10 seconds to activate the RSI driver on the arm
+  if (!Read(10'000))
+  {
+    // if we did not get a startup value, fail to activate
+    return CallbackReturn::FAILURE;
+  }
 
-  Read(10 * READ_TIMEOUT_MS);
+  stop_requested_ = false;
 
   std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
   CopyGPIOStatesToCommands();
@@ -176,7 +210,17 @@ return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::D
     return return_type::OK;
   }
 
-  Read(READ_TIMEOUT_MS);
+  if (blocking_read_)
+  {
+    // if blocking is enabled, pass a timeout
+    Read(READ_TIMEOUT_MS);
+  }
+  else
+  {
+    // if blocking is disabled, pass a timeout of 0; this is equivalent to not blocking
+    Read(0);
+  }
+
   return return_type::OK;
 }
 
@@ -236,7 +280,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
   return true;
 }
 
-void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
+bool KukaRSIHardwareInterface::Read(const int64_t request_timeout)
 {
   auto motion_state_status =
     robot_ptr_->ReceiveMotionState(std::chrono::milliseconds(request_timeout));
@@ -263,12 +307,9 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
           gpio_values.at(i)->GetGPIOConfig()->GetName().c_str());
       }
     }
+    return true;
   }
-  else
-  {
-    RCLCPP_ERROR(logger_, "Failed to receive motion state %s", motion_state_status.message);
-    on_deactivate(lifecycle_state_);
-  }
+  return false;
 }
 
 void KukaRSIHardwareInterface::Write()
