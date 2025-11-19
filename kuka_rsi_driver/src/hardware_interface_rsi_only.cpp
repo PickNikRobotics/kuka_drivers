@@ -31,8 +31,8 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
     return CallbackReturn::ERROR;
   }
 
-  hw_states_.resize(info_.joints.size(), 0.0);
-  hw_commands_.resize(info_.joints.size(), 0.0);
+  hw_states_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
+  hw_commands_.resize(info_.joints.size(), std::numeric_limits<double>::quiet_NaN());
 
   for (const auto & joint : info_.joints)
   {
@@ -166,26 +166,6 @@ CallbackReturn KukaRSIHardwareInterface::on_configure(const rclcpp_lifecycle::St
 
 CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 {
-  // 10 seconds to activate the RSI driver on the arm
-  if (!Read(10'000))
-  {
-    // if we did not get a startup value, fail to activate
-    return CallbackReturn::FAILURE;
-  }
-
-  stop_requested_ = false;
-
-  std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
-  CopyGPIOStatesToCommands();
-
-  Write();
-
-  msg_received_ = false;
-  first_write_done_ = true;
-  is_active_ = true;
-
-  RCLCPP_INFO(logger_, "Received position data from robot controller!");
-
   return CallbackReturn::SUCCESS;
 }
 
@@ -206,7 +186,6 @@ return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::D
 {
   if (!is_active_)
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
     return return_type::OK;
   }
 
@@ -226,9 +205,26 @@ return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::D
 
 return_type KukaRSIHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (is_active_ && (msg_received_ || stop_requested_) && first_write_done_)
+  if (is_active_)
   {
     Write();
+  } else {
+
+    // first RW
+    if (!Read(0)) {
+      return return_type::OK;
+    }
+
+    stop_requested_ = false;
+
+    std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
+    CopyGPIOStatesToCommands();
+
+    Write();
+
+    msg_received_ = false;
+    first_write_done_ = true;
+    is_active_ = true;
   }
 
   return return_type::OK;
