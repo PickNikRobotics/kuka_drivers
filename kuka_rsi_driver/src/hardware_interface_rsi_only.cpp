@@ -83,8 +83,6 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
 
   RCLCPP_INFO(logger_, "Client IP: %s", info_.hardware_parameters["client_ip"].c_str());
 
-  first_write_done_ = false;
-  is_active_ = false;
   msg_received_ = false;
   stop_requested_ = false;
 
@@ -138,19 +136,45 @@ CallbackReturn KukaRSIHardwareInterface::on_configure(const rclcpp_lifecycle::St
 CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 {
   stop_requested_ = false;
+  communication_established_ = false;
+  rsi_thread_active_ = true;
 
-  Read(10 * READ_TIMEOUT_MS);
+  // Start RSI communication thread
+  rsi_thread_ = std::thread(&KukaRSIHardwareInterface::RSIThreadLoop, this);
 
-  std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
-  CopyGPIOStatesToCommands();
+  // Wait for communication to be established
+  const auto start_time = std::chrono::steady_clock::now();
+  while (!communication_established_ && rsi_thread_active_)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  Write();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count();
 
-  msg_received_ = false;
-  first_write_done_ = true;
-  is_active_ = true;
+    if (elapsed > ACTIVATION_TIMEOUT_S)
+    {
+      RCLCPP_ERROR(logger_, "Timeout waiting for RSI communication to establish");
+      rsi_thread_active_ = false;
+      if (rsi_thread_.joinable())
+      {
+        rsi_thread_.join();
+      }
+      return CallbackReturn::ERROR;
+    }
+  }
 
-  RCLCPP_INFO(logger_, "Received position data from robot controller!");
+  if (!communication_established_)
+  {
+    RCLCPP_ERROR(logger_, "Failed to establish RSI communication");
+    if (rsi_thread_.joinable())
+    {
+      rsi_thread_.join();
+    }
+    return CallbackReturn::ERROR;
+  }
+
+  RCLCPP_INFO(logger_, "Hardware interface activated and RSI communication established!");
 
   return CallbackReturn::SUCCESS;
 }
@@ -158,7 +182,16 @@ CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::Sta
 CallbackReturn KukaRSIHardwareInterface::on_deactivate(const rclcpp_lifecycle::State &)
 {
   stop_requested_ = true;
-  RCLCPP_INFO(logger_, "Stop requested!");
+  rsi_thread_active_ = false;
+
+  if (rsi_thread_.joinable())
+  {
+    rsi_thread_.join();
+  }
+
+  msg_received_ = false;
+
+  RCLCPP_INFO(logger_, "Hardware interface deactivated!");
   return CallbackReturn::SUCCESS;
 }
 
@@ -170,24 +203,88 @@ CallbackReturn KukaRSIHardwareInterface::on_cleanup(const rclcpp_lifecycle::Stat
 
 return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (!is_active_)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    return return_type::OK;
-  }
-
-  Read(READ_TIMEOUT_MS);
+  // Data is already being updated by RSI thread, just ensure thread-safe access
+  std::lock_guard<std::mutex> lock(data_mutex_);
   return return_type::OK;
 }
 
 return_type KukaRSIHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (is_active_ && (msg_received_ || stop_requested_) && first_write_done_)
+  // Commands are read by RSI thread, just ensure thread-safe access
+  std::lock_guard<std::mutex> lock(data_mutex_);
+  return return_type::OK;
+}
+
+void KukaRSIHardwareInterface::RSIThreadLoop()
+{
+  RCLCPP_INFO(logger_, "RSI thread started");
+
+  // Set real-time scheduling priority
+  struct sched_param param;
+  param.sched_priority = 95;
+  if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
   {
-    Write();
+    RCLCPP_WARN(logger_, "Failed to set real-time priority: %s", strerror(errno));
+    RCLCPP_WARN(logger_, "RSI thread will run with default priority");
+  }
+  else
+  {
+    RCLCPP_INFO(logger_, "RSI thread running with real-time priority");
   }
 
-  return return_type::OK;
+  // Initial blocking Read with extended timeout - keep trying until success or shutdown
+  while (rsi_thread_active_ && !communication_established_)
+  {
+    Read(10 * READ_TIMEOUT_MS);
+
+    if (msg_received_)
+    {
+      // Lock mutex and copy states to commands for initial handshake
+      {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
+        CopyGPIOStatesToCommands();
+      }
+
+      Write();  // Initial write to complete handshake
+      communication_established_ = true;
+      msg_received_ = false;
+      RCLCPP_INFO(logger_, "RSI communication established!");
+    }
+  }
+
+  // If we exit loop without establishing communication, thread ends
+  if (!communication_established_)
+  {
+    RCLCPP_ERROR(logger_, "Failed to establish RSI communication, thread exiting");
+    rsi_thread_active_ = false;
+    return;
+  }
+
+  // Normal Read→Write loop
+  while (rsi_thread_active_ && !stop_requested_)
+  {
+    Read(READ_TIMEOUT_MS);
+
+    if (msg_received_)
+    {
+      Write();
+      msg_received_ = false;
+    }
+  }
+
+  // Cleanup: send stop signal if needed
+  if (stop_requested_ && msg_received_)
+  {
+    RCLCPP_INFO(logger_, "Sending stop signal from RSI thread");
+    auto send_reply_status = robot_ptr_->StopControlling();
+    if (send_reply_status.return_code != kuka::external::control::ReturnCode::OK)
+    {
+      RCLCPP_ERROR(logger_, "Failed to send stop signal: %s", send_reply_status.message);
+    }
+  }
+
+  RCLCPP_INFO(logger_, "RSI thread exiting");
 }
 
 bool KukaRSIHardwareInterface::SetupRobot()
@@ -247,6 +344,8 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
     const auto & positions = req_message.GetMeasuredPositions();
     const auto & gpio_values = req_message.GetGPIOValues();
 
+    // Lock mutex when updating shared data
+    std::lock_guard<std::mutex> lock(data_mutex_);
     std::copy(positions.cbegin(), positions.cend(), hw_states_.begin());
     // Save IO states
     for (size_t i = 0; i < hw_gpio_states_.size(); i++)
@@ -266,8 +365,7 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
   }
   else
   {
-    RCLCPP_ERROR(logger_, "Failed to receive motion state %s", motion_state_status.message);
-    on_deactivate(lifecycle_state_);
+    RCLCPP_ERROR(logger_, "Failed to receive motion state: %s", motion_state_status.message);
   }
 }
 
@@ -275,29 +373,15 @@ void KukaRSIHardwareInterface::Write()
 {
   // Write values to hardware interface
   auto & control_signal = robot_ptr_->GetControlSignal();
-  control_signal.AddJointPositionValues(hw_commands_.cbegin(), hw_commands_.cend());
-  control_signal.AddGPIOValues(hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend());
 
-  kuka::external::control::Status send_reply_status;
-  if (stop_requested_)
+  // Lock mutex when reading commands
   {
-    if (msg_received_)
-    {
-      RCLCPP_INFO(logger_, "Sending stop signal");
-      send_reply_status = robot_ptr_->StopControlling();
-    }
-    else
-    {
-      send_reply_status.return_code = kuka::external::control::ReturnCode::OK;
-    }
-    first_write_done_ = false;
-    is_active_ = false;
-    msg_received_ = false;
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    control_signal.AddJointPositionValues(hw_commands_.cbegin(), hw_commands_.cend());
+    control_signal.AddGPIOValues(hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend());
   }
-  else
-  {
-    send_reply_status = robot_ptr_->SendControlSignal();
-  }
+
+  auto send_reply_status = robot_ptr_->SendControlSignal();
 
   if (send_reply_status.return_code != kuka::external::control::ReturnCode::OK)
   {
