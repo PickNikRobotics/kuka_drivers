@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <vector>
+#include <string>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
@@ -292,6 +293,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
   RCLCPP_INFO(logger_, "Initiating network setup...");
 
   kuka::external::control::kss::Configuration config;
+  config.client_port = std::stoi(info_.hardware_parameters["client_port"]);
   config.installed_interface =
     kuka::external::control::kss::Configuration::InstalledInterface::RSI_ONLY;
   config.dof = info_.joints.size();
