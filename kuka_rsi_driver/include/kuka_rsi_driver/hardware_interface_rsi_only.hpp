@@ -91,9 +91,13 @@ private:
   std::unique_ptr<kuka::external::control::kss::Robot> robot_ptr_;
 
   std::vector<double> hw_states_;
+  std::vector<double> hw_states_internal_;
   std::vector<double> hw_gpio_states_;
+  std::vector<double> hw_gpio_states_internal_;
   std::vector<double> hw_commands_;
+  std::vector<double> hw_commands_internal_;
   std::vector<double> hw_gpio_commands_;
+  std::vector<double> hw_gpio_commands_internal_;
 
   std::vector<int> gpio_states_to_commands_map_;
 

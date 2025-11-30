@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <vector>
-#include <string>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
@@ -32,6 +31,8 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
 
   hw_states_.resize(info_.joints.size(), 0.0);
   hw_commands_.resize(info_.joints.size(), 0.0);
+  hw_states_internal_.resize(info_.joints.size(), 0.0);
+  hw_commands_internal_.resize(info_.joints.size(), 0.0);
 
   for (const auto & joint : info_.joints)
   {
@@ -81,6 +82,8 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
 
   hw_gpio_states_.resize(gpio.state_interfaces.size(), 0.0);
   hw_gpio_commands_.resize(gpio.command_interfaces.size(), 0.0);
+  hw_gpio_states_internal_.resize(gpio.state_interfaces.size(), 0.0);
+  hw_gpio_commands_internal_.resize(gpio.command_interfaces.size(), 0.0);
 
   RCLCPP_INFO(logger_, "Client IP: %s", info_.hardware_parameters["client_ip"].c_str());
 
@@ -204,15 +207,21 @@ CallbackReturn KukaRSIHardwareInterface::on_cleanup(const rclcpp_lifecycle::Stat
 
 return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  // Data is already being updated by RSI thread, just ensure thread-safe access
+  // Copy internal buffers to exported buffers (controller manager reads exported)
   std::lock_guard<std::mutex> lock(data_mutex_);
+  std::copy(hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_states_.begin());
+  std::copy(
+    hw_gpio_states_internal_.cbegin(), hw_gpio_states_internal_.cend(), hw_gpio_states_.begin());
   return return_type::OK;
 }
 
 return_type KukaRSIHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  // Commands are read by RSI thread, just ensure thread-safe access
+  // Copy exported buffers to internal buffers (RSI thread sends internal)
   std::lock_guard<std::mutex> lock(data_mutex_);
+  std::copy(hw_commands_.cbegin(), hw_commands_.cend(), hw_commands_internal_.begin());
+  std::copy(
+    hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend(), hw_gpio_commands_internal_.begin());
   return return_type::OK;
 }
 
@@ -243,7 +252,8 @@ void KukaRSIHardwareInterface::RSIThreadLoop()
       // Lock mutex and copy states to commands for initial handshake
       {
         std::lock_guard<std::mutex> lock(data_mutex_);
-        std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
+        std::copy(
+          hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_commands_internal_.begin());
         CopyGPIOStatesToCommands();
       }
 
@@ -293,7 +303,6 @@ bool KukaRSIHardwareInterface::SetupRobot()
   RCLCPP_INFO(logger_, "Initiating network setup...");
 
   kuka::external::control::kss::Configuration config;
-  config.client_port = std::stoi(info_.hardware_parameters["client_port"]);
   config.installed_interface =
     kuka::external::control::kss::Configuration::InstalledInterface::RSI_ONLY;
   config.dof = info_.joints.size();
@@ -346,16 +355,16 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
     const auto & positions = req_message.GetMeasuredPositions();
     const auto & gpio_values = req_message.GetGPIOValues();
 
-    // Lock mutex when updating shared data
+    // Lock mutex when updating internal buffers
     std::lock_guard<std::mutex> lock(data_mutex_);
-    std::copy(positions.cbegin(), positions.cend(), hw_states_.begin());
+    std::copy(positions.cbegin(), positions.cend(), hw_states_internal_.begin());
     // Save IO states
-    for (size_t i = 0; i < hw_gpio_states_.size(); i++)
+    for (size_t i = 0; i < hw_gpio_states_internal_.size(); i++)
     {
       auto value = gpio_values.at(i)->GetValue();
       if (value.has_value())
       {
-        hw_gpio_states_[i] = value.value();
+        hw_gpio_states_internal_[i] = value.value();
       }
       else
       {
@@ -376,11 +385,13 @@ void KukaRSIHardwareInterface::Write()
   // Write values to hardware interface
   auto & control_signal = robot_ptr_->GetControlSignal();
 
-  // Lock mutex when reading commands
+  // Lock mutex when reading from internal buffers
   {
     std::lock_guard<std::mutex> lock(data_mutex_);
-    control_signal.AddJointPositionValues(hw_commands_.cbegin(), hw_commands_.cend());
-    control_signal.AddGPIOValues(hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend());
+    control_signal.AddJointPositionValues(
+      hw_commands_internal_.cbegin(), hw_commands_internal_.cend());
+    control_signal.AddGPIOValues(
+      hw_gpio_commands_internal_.cbegin(), hw_gpio_commands_internal_.cend());
   }
 
   auto send_reply_status = robot_ptr_->SendControlSignal();
@@ -423,11 +434,12 @@ bool KukaRSIHardwareInterface::CheckJointInterfaces(
 }
 void KukaRSIHardwareInterface::CopyGPIOStatesToCommands()
 {
+  // Note: called with mutex already locked in RSIThreadLoop
   for (size_t i = 0; i < gpio_states_to_commands_map_.size(); i++)
   {
     if (gpio_states_to_commands_map_[i] != -1)
     {
-      hw_gpio_commands_[i] = hw_gpio_states_[gpio_states_to_commands_map_[i]];
+      hw_gpio_commands_internal_[i] = hw_gpio_states_internal_[gpio_states_to_commands_map_[i]];
     }
   }
 }
