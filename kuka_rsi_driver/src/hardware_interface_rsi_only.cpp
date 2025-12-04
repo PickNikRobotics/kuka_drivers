@@ -305,6 +305,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
   kuka::external::control::kss::Configuration config;
   config.installed_interface =
     kuka::external::control::kss::Configuration::InstalledInterface::RSI_ONLY;
+  config.client_port = std::stoi(info_.hardware_parameters["client_port"]);
   config.dof = info_.joints.size();
   RCLCPP_INFO(logger_, "Configured GPIO commands:");
   for (const auto & gpio_command : info_.gpios[0].command_interfaces)
