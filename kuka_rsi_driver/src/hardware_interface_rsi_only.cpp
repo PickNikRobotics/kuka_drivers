@@ -207,22 +207,30 @@ CallbackReturn KukaRSIHardwareInterface::on_cleanup(const rclcpp_lifecycle::Stat
 
 return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  // Copy internal buffers to exported buffers (controller manager reads exported)
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  std::copy(hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_states_.begin());
-  std::copy(
-    hw_gpio_states_internal_.cbegin(), hw_gpio_states_internal_.cend(), hw_gpio_states_.begin());
-  return return_type::OK;
+  if (communication_established_)
+  {
+    // Copy internal buffers to exported buffers (controller manager reads exported)
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::copy(hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_states_.begin());
+    std::copy(
+      hw_gpio_states_internal_.cbegin(), hw_gpio_states_internal_.cend(), hw_gpio_states_.begin());
+    return return_type::OK;
+  }
+  return return_type::ERROR;
 }
 
 return_type KukaRSIHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  // Copy exported buffers to internal buffers (RSI thread sends internal)
-  std::lock_guard<std::mutex> lock(data_mutex_);
-  std::copy(hw_commands_.cbegin(), hw_commands_.cend(), hw_commands_internal_.begin());
-  std::copy(
-    hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend(), hw_gpio_commands_internal_.begin());
-  return return_type::OK;
+  if (communication_established_)
+  {
+    // Copy exported buffers to internal buffers (RSI thread sends internal)
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::copy(hw_commands_.cbegin(), hw_commands_.cend(), hw_commands_internal_.begin());
+    std::copy(
+      hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend(), hw_gpio_commands_internal_.begin());
+    return return_type::OK;
+  }
+  return return_type::ERROR;
 }
 
 void KukaRSIHardwareInterface::RSIThreadLoop()
@@ -254,6 +262,7 @@ void KukaRSIHardwareInterface::RSIThreadLoop()
         std::lock_guard<std::mutex> lock(data_mutex_);
         std::copy(
           hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_commands_internal_.begin());
+        std::copy(hw_commands_internal_.cbegin(), hw_commands_internal_.cend(), hw_commands_.begin());
         CopyGPIOStatesToCommands();
       }
 
@@ -441,6 +450,7 @@ void KukaRSIHardwareInterface::CopyGPIOStatesToCommands()
     if (gpio_states_to_commands_map_[i] != -1)
     {
       hw_gpio_commands_internal_[i] = hw_gpio_states_internal_[gpio_states_to_commands_map_[i]];
+      hw_gpio_commands_[i] = hw_gpio_commands_internal_[i];
     }
   }
 }
