@@ -120,7 +120,7 @@ class RSISimulator(Node):
     def timer_callback(self):
         if self.timeout_count == 100:
             self.get_logger().fatal(f"{self.node_name_} Timeout count of 100 exceeded")
-            # sys.exit()
+            sys.exit()
         try:
             msg = create_rsi_xml_rob(self.act_joint_pos, self.timeout_count, self.ipoc)
             self.rsi_act_pub_.publish(msg)
@@ -129,7 +129,6 @@ class RSISimulator(Node):
             self.rsi_cmd_pub_.publish(recv_msg)
             self.get_logger().warn(f"msg: {recv_msg}")
             des_joint_correction_absolute, ipoc_recv, stop_flag = parse_rsi_xml_sen(recv_msg)
-            self.get_logger().warn(f"des_joint_correction_absolute: {des_joint_correction_absolute}")
             if ipoc_recv == self.ipoc:
                 self.act_joint_pos = self.initial_joint_pos + des_joint_correction_absolute
             else:
