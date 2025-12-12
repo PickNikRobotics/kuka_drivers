@@ -25,11 +25,13 @@ def generate_launch_description():
         "rsi_ip_address", default_value=TextSubstitution(text="127.0.0.1")
     )
     rsi_port = DeclareLaunchArgument("rsi_port", default_value=TextSubstitution(text="59152"))
+    dof = DeclareLaunchArgument("dof", default_value=TextSubstitution(text="6"))
 
     return LaunchDescription(
         [
             rsi_ip_address,
             rsi_port,
+            dof,
             Node(
                 package="kuka_rsi_simulator",
                 executable="rsi_simulator",
@@ -38,6 +40,7 @@ def generate_launch_description():
                     {
                         "rsi_ip_address": LaunchConfiguration("rsi_ip_address"),
                         "rsi_port": LaunchConfiguration("rsi_port"),
+                        "dof": LaunchConfiguration("dof"),
                     }
                 ],
             ),

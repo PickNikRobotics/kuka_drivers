@@ -60,7 +60,7 @@ Several files required for RSI can be found in the [`kuka-external-control-sdk`]
   - The `PORT` might be left as it is (59152), but can be also changed if a different port is to be used on the client machine.
 - `Config/User/Common/SensorInterface/rsi_joint_pos.rsix`: This contains the RSI context (can be visualized with **RSIVisual**). It can be modified for example to add GPIO handling ([See further documentation on this here](#io-configuration)), or to add filtering behaviour, but that is not recommended and should be implemented on the client side instead.
 - `KRC/R1/Program/RSI/rsi_helper.dat` and `KRC/R1/Program/RSI/rsi_helper.src`: These are used for configuring the RSI context based on the current robot position.
-- `KRC/R1/Program/RSI/rsi_joint_pos_4ms.src` and `KRC/R1/Program/RSI/rsi_joint_pos_12ms.src`: These contain KRL programs that start external control. You may choose what cycle time RSI should use (4 ms or 12 ms).
+- `KRC/R1/Program/RSI/rsi_joint_pos_4ms.src` and `KRC/R1/Program/RSI/rsi_joint_pos_12ms.src`: These contain KRL programs that start external control. You may choose what cycle time RSI should use (4 ms or 12 ms). Note that 12ms will not work if you are using an external axis, as there is built-in compensation. With an external axis, use 4ms.
 
 If you are using an older version of RSI (i.e., <=4.0.3), the RSI context must be defined using three separate files&mdash;`rsi_joint_pos.rsi`, `rsi_joint_pos.rsi.diagram` and `rsi_joint_pos.rsi.xml`&mdash;instead of a single `.rsix` file. These files can be found in the `kuka_external_control_sdk/kss/krl/SensorInterface/deprecated` directory of the [`kuka-external-control-sdk`](https://github.com/kroshu/kuka-external-control-sdk) repository. Use these files in place of the `rsi_joint_pos.rsix` context file mentioned above.
 
@@ -71,15 +71,15 @@ Method 1:
 1. Copy the files to a USB-stick.
 2. Plug it into the teach pad or controller.
 3. Log in as **Expert** or **Administrator** on the controller.
-4. Copy the `rsi_joint_pos_4ms.src`/`rsi_joint_pos_12ms.src` file(s) to `KRC:\R1\Program`.
-5. Copy the rest of the files to `C:\KRC\ROBOTER\Config\User\Common\SensorInterface`.
+4. Copy all files to `KRC:\R1\Program`.
+5. Also copy all files to `C:\KRC\ROBOTER\Config\User\Common\SensorInterface`.
 
 Method 2:
 
 1. Connect to the KRC with WorkVisual
 2. Log in as **Expert** or **Administrator** on the controller.
-3. Copy the `rsi_joint_pos_4ms.src`/`rsi_joint_pos_12ms.src` file(s) to `KRC:\R1\Program` in WorkVisual
-4. Copy the rest of the files to `C:\KRC\ROBOTER\Config\User\Common\SensorInterface` in WorkVisual
+3. Copy all files to `KRC:\R1\Program` in WorkVisual.
+4. Copy all files to `C:\KRC\ROBOTER\Config\User\Common\SensorInterface` in WorkVisual.
 5. Deploy the project
 
 ### Configuration

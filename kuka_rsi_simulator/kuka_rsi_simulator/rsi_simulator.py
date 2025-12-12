@@ -24,22 +24,24 @@ from std_msgs.msg import String
 
 def create_rsi_xml_rob(act_joint_pos, timeout_count, ipoc):
     q = act_joint_pos
+    dof = len(q)
+    robot_dof = min(dof, 6)
+    external_dof = dof - robot_dof if dof > 6 else 0
+    
     root = ET.Element("Rob", {"TYPE": "KUKA"})
     ET.SubElement(
         root, "RIst", {"X": "0.0", "Y": "0.0", "Z": "0.0", "A": "0.0", "B": "0.0", "C": "0.0"}
     )
-    ET.SubElement(
-        root,
-        "AIPos",
-        {
-            "A1": str(q[0]),
-            "A2": str(q[1]),
-            "A3": str(q[2]),
-            "A4": str(q[3]),
-            "A5": str(q[4]),
-            "A6": str(q[5]),
-        },
-    )
+    
+    # Robot axes (A1-A6)
+    robot_attribs = {f"A{i+1}": str(q[i]) for i in range(robot_dof)}
+    ET.SubElement(root, "AIPos", robot_attribs)
+    
+    # External axes (E1-EN)
+    if external_dof > 0:
+        external_attribs = {f"E{i+1}": str(q[robot_dof + i]) for i in range(external_dof)}
+        ET.SubElement(root, "EIPos", external_attribs)
+    
     ET.SubElement(root, "Delay", {"D": str(timeout_count)})
     ET.SubElement(root, "IPOC").text = str(ipoc)
     return ET.tostring(root, encoding="utf-8", method="xml").replace(b" />", b"/>")
@@ -47,10 +49,19 @@ def create_rsi_xml_rob(act_joint_pos, timeout_count, ipoc):
 
 def parse_rsi_xml_sen(data):
     root = ET.fromstring(data)
+    
+    # Parse robot axes (A1-A6)
     AK = root.find("AK").attrib
-    desired_joint_correction = np.array(
-        [AK["A1"], AK["A2"], AK["A3"], AK["A4"], AK["A5"], AK["A6"]]
-    ).astype(np.float64)
+    robot_correction = np.array([AK[f"A{i+1}"] for i in range(len(AK))]).astype(np.float64)
+    
+    # Parse external axes (E1-EN) if present
+    EK = root.find("EK")
+    if EK is not None:
+        external_correction = np.array([EK.attrib[f"E{i+1}"] for i in range(len(EK.attrib))]).astype(np.float64)
+        desired_joint_correction = np.concatenate([robot_correction, external_correction])
+    else:
+        desired_joint_correction = robot_correction
+    
     IPOC = root.find("IPOC").text
     stop_flag = root.find("Stop").text
 
@@ -59,9 +70,6 @@ def parse_rsi_xml_sen(data):
 
 class RSISimulator(Node):
     cycle_time = 0.04
-    act_joint_pos = np.array([0, -90, 90, 0, 90, 0]).astype(np.float64)
-    initial_joint_pos = act_joint_pos.copy()
-    des_joint_correction_absolute = np.zeros(6)
     timeout_count = 0
     ipoc = 0
     rsi_ip_address_ = "127.0.0.1"
@@ -79,6 +87,8 @@ class RSISimulator(Node):
         self.declare_parameter("rsi_ip_address", "127.0.0.1")
         self.declare_parameter("rsi_port", 59152)
         self.declare_parameter("rsi_send_name", "IamFree")
+        self.declare_parameter("dof", 6)
+
         self.rsi_ip_address_ = (
             self.get_parameter("rsi_ip_address").get_parameter_value().string_value
         )
@@ -86,10 +96,22 @@ class RSISimulator(Node):
         self.rsi_send_name_ = (
             self.get_parameter("rsi_send_name").get_parameter_value().string_value
         )
+
+        dof = self.get_parameter("dof").get_parameter_value().integer_value
+        self.robot_dof = min(dof, 6)
+        self.external_dof = min(dof - 6, 6) if dof > 6 else 0
+
+        # Initialize joint positions
+        self.act_joint_pos = np.zeros(dof)
+        self.act_joint_pos[:6] = np.array([0, -90, 90, 0, 90, 0])  # Initialize robot joints to home
+        self.initial_joint_pos = self.act_joint_pos.copy()
+        self.des_joint_correction_absolute = np.zeros(dof)
+
         self.rsi_act_pub_ = self.create_publisher(String, self.node_name_ + "/rsi/state", 1)
         self.rsi_cmd_pub_ = self.create_publisher(String, self.node_name_ + "/rsi/command", 1)
         self.get_logger().info(f"rsi_ip_address: {self.rsi_ip_address_}")
         self.get_logger().info(f"rsi_port: {self.rsi_port_address_}")
+        self.get_logger().info(f"dof: {dof} (robot: {self.robot_dof}, external: {self.external_dof})")
 
         self.socket_ = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.get_logger().info(f"{self.node_name_}, Successfully created socket")

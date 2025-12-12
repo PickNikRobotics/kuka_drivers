@@ -31,6 +31,8 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
 
   hw_states_.resize(info_.joints.size(), 0.0);
   hw_commands_.resize(info_.joints.size(), 0.0);
+  hw_states_internal_.resize(info_.joints.size(), 0.0);
+  hw_commands_internal_.resize(info_.joints.size(), 0.0);
 
   for (const auto & joint : info_.joints)
   {
@@ -80,11 +82,11 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
 
   hw_gpio_states_.resize(gpio.state_interfaces.size(), 0.0);
   hw_gpio_commands_.resize(gpio.command_interfaces.size(), 0.0);
+  hw_gpio_states_internal_.resize(gpio.state_interfaces.size(), 0.0);
+  hw_gpio_commands_internal_.resize(gpio.command_interfaces.size(), 0.0);
 
   RCLCPP_INFO(logger_, "Client IP: %s", info_.hardware_parameters["client_ip"].c_str());
 
-  first_write_done_ = false;
-  is_active_ = false;
   msg_received_ = false;
   stop_requested_ = false;
 
@@ -138,19 +140,45 @@ CallbackReturn KukaRSIHardwareInterface::on_configure(const rclcpp_lifecycle::St
 CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 {
   stop_requested_ = false;
+  communication_established_ = false;
+  rsi_thread_active_ = true;
 
-  Read(10 * READ_TIMEOUT_MS);
+  // Start RSI communication thread
+  rsi_thread_ = std::thread(&KukaRSIHardwareInterface::RSIThreadLoop, this);
 
-  std::copy(hw_states_.cbegin(), hw_states_.cend(), hw_commands_.begin());
-  CopyGPIOStatesToCommands();
+  // Wait for communication to be established
+  const auto start_time = std::chrono::steady_clock::now();
+  while (!communication_established_ && rsi_thread_active_)
+  {
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
-  Write();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                           std::chrono::steady_clock::now() - start_time)
+                           .count();
 
-  msg_received_ = false;
-  first_write_done_ = true;
-  is_active_ = true;
+    if (elapsed > ACTIVATION_TIMEOUT_S)
+    {
+      RCLCPP_ERROR(logger_, "Timeout waiting for RSI communication to establish");
+      rsi_thread_active_ = false;
+      if (rsi_thread_.joinable())
+      {
+        rsi_thread_.join();
+      }
+      return CallbackReturn::ERROR;
+    }
+  }
 
-  RCLCPP_INFO(logger_, "Received position data from robot controller!");
+  if (!communication_established_)
+  {
+    RCLCPP_ERROR(logger_, "Failed to establish RSI communication");
+    if (rsi_thread_.joinable())
+    {
+      rsi_thread_.join();
+    }
+    return CallbackReturn::ERROR;
+  }
+
+  RCLCPP_INFO(logger_, "Hardware interface activated and RSI communication established!");
 
   return CallbackReturn::SUCCESS;
 }
@@ -158,7 +186,16 @@ CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::Sta
 CallbackReturn KukaRSIHardwareInterface::on_deactivate(const rclcpp_lifecycle::State &)
 {
   stop_requested_ = true;
-  RCLCPP_INFO(logger_, "Stop requested!");
+  rsi_thread_active_ = false;
+
+  if (rsi_thread_.joinable())
+  {
+    rsi_thread_.join();
+  }
+
+  msg_received_ = false;
+
+  RCLCPP_INFO(logger_, "Hardware interface deactivated!");
   return CallbackReturn::SUCCESS;
 }
 
@@ -170,24 +207,104 @@ CallbackReturn KukaRSIHardwareInterface::on_cleanup(const rclcpp_lifecycle::Stat
 
 return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (!is_active_)
+  if (communication_established_)
   {
-    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    // Copy internal buffers to exported buffers (controller manager reads exported)
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::copy(hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_states_.begin());
+    std::copy(
+      hw_gpio_states_internal_.cbegin(), hw_gpio_states_internal_.cend(), hw_gpio_states_.begin());
     return return_type::OK;
   }
-
-  Read(READ_TIMEOUT_MS);
-  return return_type::OK;
+  return return_type::ERROR;
 }
 
 return_type KukaRSIHardwareInterface::write(const rclcpp::Time &, const rclcpp::Duration &)
 {
-  if (is_active_ && (msg_received_ || stop_requested_) && first_write_done_)
+  if (communication_established_)
   {
-    Write();
+    // Copy exported buffers to internal buffers (RSI thread sends internal)
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::copy(hw_commands_.cbegin(), hw_commands_.cend(), hw_commands_internal_.begin());
+    std::copy(
+      hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend(), hw_gpio_commands_internal_.begin());
+    return return_type::OK;
+  }
+  return return_type::ERROR;
+}
+
+void KukaRSIHardwareInterface::RSIThreadLoop()
+{
+  RCLCPP_INFO(logger_, "RSI thread started");
+
+  // Set real-time scheduling priority
+  struct sched_param param;
+  param.sched_priority = 95;
+  if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+  {
+    RCLCPP_WARN(logger_, "Failed to set real-time priority: %s", strerror(errno));
+    RCLCPP_WARN(logger_, "RSI thread will run with default priority");
+  }
+  else
+  {
+    RCLCPP_INFO(logger_, "RSI thread running with real-time priority");
   }
 
-  return return_type::OK;
+  // Initial blocking Read with extended timeout - keep trying until success or shutdown
+  while (rsi_thread_active_ && !communication_established_)
+  {
+    Read(10 * READ_TIMEOUT_MS);
+
+    if (msg_received_)
+    {
+      // Lock mutex and copy states to commands for initial handshake
+      {
+        std::lock_guard<std::mutex> lock(data_mutex_);
+        std::copy(
+          hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_commands_internal_.begin());
+        std::copy(hw_commands_internal_.cbegin(), hw_commands_internal_.cend(), hw_commands_.begin());
+        CopyGPIOStatesToCommands();
+      }
+
+      Write();  // Initial write to complete handshake
+      communication_established_ = true;
+      msg_received_ = false;
+      RCLCPP_INFO(logger_, "RSI communication established!");
+    }
+  }
+
+  // If we exit loop without establishing communication, thread ends
+  if (!communication_established_)
+  {
+    RCLCPP_ERROR(logger_, "Failed to establish RSI communication, thread exiting");
+    rsi_thread_active_ = false;
+    return;
+  }
+
+  // Normal Read→Write loop
+  while (rsi_thread_active_ && !stop_requested_)
+  {
+    Read(READ_TIMEOUT_MS);
+
+    if (msg_received_)
+    {
+      Write();
+      msg_received_ = false;
+    }
+  }
+
+  // Cleanup: send stop signal if needed
+  if (stop_requested_ && msg_received_)
+  {
+    RCLCPP_INFO(logger_, "Sending stop signal from RSI thread");
+    auto send_reply_status = robot_ptr_->StopControlling();
+    if (send_reply_status.return_code != kuka::external::control::ReturnCode::OK)
+    {
+      RCLCPP_ERROR(logger_, "Failed to send stop signal: %s", send_reply_status.message);
+    }
+  }
+
+  RCLCPP_INFO(logger_, "RSI thread exiting");
 }
 
 bool KukaRSIHardwareInterface::SetupRobot()
@@ -197,6 +314,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
   kuka::external::control::kss::Configuration config;
   config.installed_interface =
     kuka::external::control::kss::Configuration::InstalledInterface::RSI_ONLY;
+  config.client_port = std::stoi(info_.hardware_parameters["client_port"]);
   config.dof = info_.joints.size();
   RCLCPP_INFO(logger_, "Configured GPIO commands:");
   for (const auto & gpio_command : info_.gpios[0].command_interfaces)
@@ -247,14 +365,16 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
     const auto & positions = req_message.GetMeasuredPositions();
     const auto & gpio_values = req_message.GetGPIOValues();
 
-    std::copy(positions.cbegin(), positions.cend(), hw_states_.begin());
+    // Lock mutex when updating internal buffers
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    std::copy(positions.cbegin(), positions.cend(), hw_states_internal_.begin());
     // Save IO states
-    for (size_t i = 0; i < hw_gpio_states_.size(); i++)
+    for (size_t i = 0; i < hw_gpio_states_internal_.size(); i++)
     {
       auto value = gpio_values.at(i)->GetValue();
       if (value.has_value())
       {
-        hw_gpio_states_[i] = value.value();
+        hw_gpio_states_internal_[i] = value.value();
       }
       else
       {
@@ -266,8 +386,7 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
   }
   else
   {
-    RCLCPP_ERROR(logger_, "Failed to receive motion state %s", motion_state_status.message);
-    on_deactivate(lifecycle_state_);
+    RCLCPP_ERROR(logger_, "Failed to receive motion state: %s", motion_state_status.message);
   }
 }
 
@@ -275,29 +394,17 @@ void KukaRSIHardwareInterface::Write()
 {
   // Write values to hardware interface
   auto & control_signal = robot_ptr_->GetControlSignal();
-  control_signal.AddJointPositionValues(hw_commands_.cbegin(), hw_commands_.cend());
-  control_signal.AddGPIOValues(hw_gpio_commands_.cbegin(), hw_gpio_commands_.cend());
 
-  kuka::external::control::Status send_reply_status;
-  if (stop_requested_)
+  // Lock mutex when reading from internal buffers
   {
-    if (msg_received_)
-    {
-      RCLCPP_INFO(logger_, "Sending stop signal");
-      send_reply_status = robot_ptr_->StopControlling();
-    }
-    else
-    {
-      send_reply_status.return_code = kuka::external::control::ReturnCode::OK;
-    }
-    first_write_done_ = false;
-    is_active_ = false;
-    msg_received_ = false;
+    std::lock_guard<std::mutex> lock(data_mutex_);
+    control_signal.AddJointPositionValues(
+      hw_commands_internal_.cbegin(), hw_commands_internal_.cend());
+    control_signal.AddGPIOValues(
+      hw_gpio_commands_internal_.cbegin(), hw_gpio_commands_internal_.cend());
   }
-  else
-  {
-    send_reply_status = robot_ptr_->SendControlSignal();
-  }
+
+  auto send_reply_status = robot_ptr_->SendControlSignal();
 
   if (send_reply_status.return_code != kuka::external::control::ReturnCode::OK)
   {
@@ -337,11 +444,13 @@ bool KukaRSIHardwareInterface::CheckJointInterfaces(
 }
 void KukaRSIHardwareInterface::CopyGPIOStatesToCommands()
 {
+  // Note: called with mutex already locked in RSIThreadLoop
   for (size_t i = 0; i < gpio_states_to_commands_map_.size(); i++)
   {
     if (gpio_states_to_commands_map_[i] != -1)
     {
-      hw_gpio_commands_[i] = hw_gpio_states_[gpio_states_to_commands_map_[i]];
+      hw_gpio_commands_internal_[i] = hw_gpio_states_internal_[gpio_states_to_commands_map_[i]];
+      hw_gpio_commands_[i] = hw_gpio_commands_internal_[i];
     }
   }
 }

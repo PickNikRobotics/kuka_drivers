@@ -15,7 +15,10 @@
 #ifndef KUKA_RSI_DRIVER__HARDWARE_INTERFACE_RSI_ONLY_HPP_
 #define KUKA_RSI_DRIVER__HARDWARE_INTERFACE_RSI_ONLY_HPP_
 
+#include <atomic>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/system_interface.hpp"
@@ -81,23 +84,34 @@ private:
   KUKA_RSI_DRIVER_LOCAL kuka::external::control::kss::GPIOConfiguration ParseGPIOConfig(
     const hardware_interface::InterfaceInfo & info);
 
+  KUKA_RSI_DRIVER_LOCAL void RSIThreadLoop();
+
   const rclcpp::Logger logger_;
 
   std::unique_ptr<kuka::external::control::kss::Robot> robot_ptr_;
 
   std::vector<double> hw_states_;
+  std::vector<double> hw_states_internal_;
   std::vector<double> hw_gpio_states_;
+  std::vector<double> hw_gpio_states_internal_;
   std::vector<double> hw_commands_;
+  std::vector<double> hw_commands_internal_;
   std::vector<double> hw_gpio_commands_;
+  std::vector<double> hw_gpio_commands_internal_;
 
   std::vector<int> gpio_states_to_commands_map_;
 
-  bool first_write_done_;
-  bool is_active_;
   bool msg_received_;
   bool stop_requested_;
 
+  // RSI communication thread
+  std::thread rsi_thread_;
+  std::mutex data_mutex_;
+  std::atomic<bool> rsi_thread_active_{false};
+  std::atomic<bool> communication_established_{false};
+
   static constexpr int64_t READ_TIMEOUT_MS = 1'000;
+  static constexpr int64_t ACTIVATION_TIMEOUT_S = 30;
 };
 }  // namespace kuka_rsi_driver
 
