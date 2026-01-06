@@ -16,18 +16,18 @@
 #define KUKA_RSI_DRIVER__HARDWARE_INTERFACE_RSI_ONLY_HPP_
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include "hardware_interface/system_interface.hpp"
+#include "rclcpp/logger.hpp"
 #include "rclcpp/macros.hpp"
-#include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/state.hpp"
 
 #include "kuka/external-control-sdk/kss/robot.h"
-#include "kuka_drivers_core/control_mode.hpp"
 #include "kuka_rsi_driver/visibility_control.h"
 
 using hardware_interface::return_type;
@@ -90,14 +90,19 @@ private:
 
   std::unique_ptr<kuka::external::control::kss::Robot> robot_ptr_;
 
-  std::vector<double> hw_states_;
-  std::vector<double> hw_states_internal_;
+  std::vector<double> hw_positions_;
+  std::vector<double> hw_positions_internal_;
   std::vector<double> hw_gpio_states_;
   std::vector<double> hw_gpio_states_internal_;
+  std::vector<double> hw_velocities_;
+  std::vector<double> hw_velocities_internal_;
   std::vector<double> hw_commands_;
   std::vector<double> hw_commands_internal_;
   std::vector<double> hw_gpio_commands_;
   std::vector<double> hw_gpio_commands_internal_;
+
+  // we only care about delta between two reads, so we use the steady clock
+  std::optional<std::chrono::time_point<std::chrono::steady_clock>> last_read_time_;
 
   std::vector<int> gpio_states_to_commands_map_;
 
