@@ -148,6 +148,7 @@ CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::Sta
   stop_requested_ = false;
   communication_established_ = false;
   rsi_thread_active_ = true;
+  last_read_time_.reset();
 
   // Start RSI communication thread
   rsi_thread_ = std::thread(&KukaRSIHardwareInterface::RSIThreadLoop, this);
