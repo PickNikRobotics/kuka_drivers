@@ -470,15 +470,9 @@ bool KukaRSIHardwareInterface::CheckJointInterfaces(
     return false;
   }
 
-  if (joint.state_interfaces.size() != 1)
+  if (joint.state_interfaces.size() != 2)
   {
-    RCLCPP_FATAL(logger_, "Expecting exactly 1 state interface");
-    return false;
-  }
-
-  if (joint.state_interfaces[0].name != hardware_interface::HW_IF_POSITION)
-  {
-    RCLCPP_FATAL(logger_, "Expecting only POSITION state interface");
+    RCLCPP_FATAL(logger_, "Expecting exactly 2 state interfaces");
     return false;
   }
 
