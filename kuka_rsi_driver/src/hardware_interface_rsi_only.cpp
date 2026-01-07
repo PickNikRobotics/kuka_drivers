@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <chrono>
 #include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "rclcpp/logging.hpp"
 
 #include "kuka_drivers_core/hardware_interface_types.hpp"
 #include "kuka_rsi_driver/hardware_interface_rsi_only.hpp"
@@ -29,10 +31,12 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
     return CallbackReturn::ERROR;
   }
 
-  hw_states_.resize(info_.joints.size(), 0.0);
+  hw_positions_.resize(info_.joints.size(), 0.0);
   hw_commands_.resize(info_.joints.size(), 0.0);
-  hw_states_internal_.resize(info_.joints.size(), 0.0);
+  hw_velocities_.resize(info_.joints.size(), 0.0);
+  hw_positions_internal_.resize(info_.joints.size(), 0.0);
   hw_commands_internal_.resize(info_.joints.size(), 0.0);
+  hw_velocities_internal_.resize(info_.joints.size(), 0.0);
 
   for (const auto & joint : info_.joints)
   {
@@ -56,9 +60,9 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
     RCLCPP_FATAL(logger_, "expecting gpio component called \"gpio\" first");
     return CallbackReturn::ERROR;
   }
-  // TODO (Komaromi): Somehow check how many IOs are in the interfaces. RSI can receive and send
+  // TODO(Komaromi): Somehow check how many IOs are in the interfaces. RSI can receive and send
   // 8192 bits, but its not equal with 8192 IOs. But the ethernet object can only have 64 entries.
-  // TODO (Komaromi): Maybe better to check the configured IO-s robot_ptr->Setup here and then go
+  // TODO(Komaromi): Maybe better to check the configured IO-s robot_ptr->Setup here and then go
   // through the IO-s and check the name an size
 
   // Save the mapping of GPIO states to commands
@@ -99,7 +103,9 @@ std::vector<hardware_interface::StateInterface> KukaRSIHardwareInterface::export
   for (size_t i = 0; i < info_.joints.size(); i++)
   {
     state_interfaces.emplace_back(
-      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_states_[i]);
+      info_.joints[i].name, hardware_interface::HW_IF_POSITION, &hw_positions_[i]);
+    state_interfaces.emplace_back(
+      info_.joints[i].name, hardware_interface::HW_IF_VELOCITY, &hw_velocities_[i]);
   }
 
   for (size_t i = 0; i < info_.gpios[0].state_interfaces.size(); i++)
@@ -142,6 +148,7 @@ CallbackReturn KukaRSIHardwareInterface::on_activate(const rclcpp_lifecycle::Sta
   stop_requested_ = false;
   communication_established_ = false;
   rsi_thread_active_ = true;
+  last_read_time_.reset();
 
   // Start RSI communication thread
   rsi_thread_ = std::thread(&KukaRSIHardwareInterface::RSIThreadLoop, this);
@@ -211,7 +218,10 @@ return_type KukaRSIHardwareInterface::read(const rclcpp::Time &, const rclcpp::D
   {
     // Copy internal buffers to exported buffers (controller manager reads exported)
     std::lock_guard<std::mutex> lock(data_mutex_);
-    std::copy(hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_states_.begin());
+    std::copy(
+      hw_positions_internal_.cbegin(), hw_positions_internal_.cend(), hw_positions_.begin());
+    std::copy(
+      hw_velocities_internal_.cbegin(), hw_velocities_internal_.cend(), hw_velocities_.begin());
     std::copy(
       hw_gpio_states_internal_.cbegin(), hw_gpio_states_internal_.cend(), hw_gpio_states_.begin());
     return return_type::OK;
@@ -261,8 +271,10 @@ void KukaRSIHardwareInterface::RSIThreadLoop()
       {
         std::lock_guard<std::mutex> lock(data_mutex_);
         std::copy(
-          hw_states_internal_.cbegin(), hw_states_internal_.cend(), hw_commands_internal_.begin());
-        std::copy(hw_commands_internal_.cbegin(), hw_commands_internal_.cend(), hw_commands_.begin());
+          hw_positions_internal_.cbegin(), hw_positions_internal_.cend(),
+          hw_commands_internal_.begin());
+        std::copy(
+          hw_commands_internal_.cbegin(), hw_commands_internal_.cend(), hw_commands_.begin());
         CopyGPIOStatesToCommands();
       }
 
@@ -324,7 +336,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
       gpio_command.name.c_str(), gpio_command.data_type.c_str(), gpio_command.initial_value.c_str(),
       gpio_command.min.c_str(), gpio_command.max.c_str());
 
-    // TODO (Komaromi): Add size and parameters
+    // TODO(Komaromi): Add size and parameters
     config.gpio_command_configs.emplace_back(ParseGPIOConfig(gpio_command));
   }
 
@@ -336,7 +348,7 @@ bool KukaRSIHardwareInterface::SetupRobot()
       gpio_state.name.c_str(), gpio_state.data_type.c_str(), gpio_state.initial_value.c_str(),
       gpio_state.min.c_str(), gpio_state.max.c_str());
 
-    // TODO (Komaromi): Add size, and parameters
+    // TODO(Komaromi): Add size, and parameters
     config.gpio_state_configs.emplace_back(ParseGPIOConfig(gpio_state));
   }
 
@@ -364,10 +376,40 @@ void KukaRSIHardwareInterface::Read(const int64_t request_timeout)
     const auto & req_message = robot_ptr_->GetLastMotionState();
     const auto & positions = req_message.GetMeasuredPositions();
     const auto & gpio_values = req_message.GetGPIOValues();
+    auto const now = std::chrono::steady_clock::now();
 
     // Lock mutex when updating internal buffers
     std::lock_guard<std::mutex> lock(data_mutex_);
-    std::copy(positions.cbegin(), positions.cend(), hw_states_internal_.begin());
+
+    // first, approximate velocities with finite difference of positions
+    if (!last_read_time_.has_value())
+    {
+      // this is the first read, just say vel is 0 at startup (it should be)
+      for (size_t i = 0; i < hw_velocities_internal_.size(); i++)
+      {
+        hw_velocities_internal_[i] = 0.0;
+      }
+    }
+    else
+    {
+      std::chrono::duration<double> const dt = now - last_read_time_.value();
+      auto const dt_seconds = dt.count();
+      // only do finite diff if dt is positive and not really small
+      if (dt_seconds > 1e-12)
+      {
+        // velocity units are position units per second for each interface
+        for (size_t i = 0; i < hw_velocities_internal_.size(); i++)
+        {
+          hw_velocities_internal_[i] = (positions[i] - hw_positions_internal_[i]) / dt_seconds;
+        }
+      }
+    }
+
+    // update read time for the next loop
+    last_read_time_ = now;
+
+    // now update internal positions after we used them for the velocity approximation
+    std::copy(positions.cbegin(), positions.cend(), hw_positions_internal_.begin());
     // Save IO states
     for (size_t i = 0; i < hw_gpio_states_internal_.size(); i++)
     {
@@ -428,15 +470,9 @@ bool KukaRSIHardwareInterface::CheckJointInterfaces(
     return false;
   }
 
-  if (joint.state_interfaces.size() != 1)
+  if (joint.state_interfaces.size() != 2)
   {
-    RCLCPP_FATAL(logger_, "Expecting exactly 1 state interface");
-    return false;
-  }
-
-  if (joint.state_interfaces[0].name != hardware_interface::HW_IF_POSITION)
-  {
-    RCLCPP_FATAL(logger_, "Expecting only POSITION state interface");
+    RCLCPP_FATAL(logger_, "Expecting exactly 2 state interfaces");
     return false;
   }
 
@@ -461,7 +497,7 @@ kuka::external::control::kss::GPIOConfiguration KukaRSIHardwareInterface::ParseG
   kuka::external::control::kss::GPIOConfiguration gpio_config;
   gpio_config.name = info.name;
   gpio_config.enable_limits = true;
-  // TODO (komaromi): This might not work from Kilted kaiju onward the get_optional function in the
+  // TODO(komaromi): This might not work from Kilted kaiju onward the get_optional function in the
   // handle since it is only accepting double and bool
   if (info.data_type == "BOOL" || info.data_type == "bool")
   {
@@ -495,7 +531,7 @@ kuka::external::control::kss::GPIOConfiguration KukaRSIHardwareInterface::ParseG
   }
   else
   {
-    // TODO (Komaromi): Should this be set to 0?
+    // TODO(Komaromi): Should this be set to 0?
     gpio_config.initial_value = 0.0;  // If initial_value is empty, set to 0.0
   }
   if (!info.min.empty())
