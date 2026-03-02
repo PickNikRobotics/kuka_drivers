@@ -15,8 +15,13 @@
 #ifndef KUKA_RSI_DRIVER__HARDWARE_INTERFACE_EKI_RSI_HPP_
 #define KUKA_RSI_DRIVER__HARDWARE_INTERFACE_EKI_RSI_HPP_
 
+#include <atomic>
+#include <chrono>
 #include <memory>
+#include <mutex>
+#include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "hardware_interface/system_interface.hpp"
@@ -88,6 +93,8 @@ private:
     std::string reason = "";
   };
 
+  bool CheckActivation();
+
   KUKA_RSI_DRIVER_LOCAL bool ConnectToController();
 
   KUKA_RSI_DRIVER_LOCAL void Read(const int64_t request_timeout);
@@ -106,14 +113,24 @@ private:
 
   KUKA_RSI_DRIVER_LOCAL void ChangeCycleTime();
 
+  KUKA_RSI_DRIVER_LOCAL void RSIThreadLoop();
+
   const rclcpp::Logger logger_;
   std::unique_ptr<kuka::external::control::kss::eki::Robot> robot_ptr_;
   StatusManager status_manager_;
 
-  std::vector<double> hw_states_;
-  std::vector<double> hw_gpio_states_;
+  std::vector<double> hw_positions_;
+  std::vector<double> hw_positions_internal_;
+  std::vector<double> hw_velocities_;
+  std::vector<double> hw_velocities_internal_;
   std::vector<double> hw_commands_;
+  std::vector<double> hw_commands_internal_;
+  std::vector<double> hw_gpio_states_;
+  std::vector<double> hw_gpio_states_internal_;
   std::vector<double> hw_gpio_commands_;
+  std::vector<double> hw_gpio_commands_internal_;
+
+  std::optional<std::chrono::time_point<std::chrono::steady_clock>> last_read_time_;
 
   std::vector<int> gpio_states_to_commands_map_;
 
@@ -134,19 +151,23 @@ private:
   std::mutex init_mtx_;
   std::condition_variable init_cv_;
 
-  bool first_write_done_;
-  bool is_active_;
   bool msg_received_;
   bool prev_drives_enabled_;
   bool drives_command_sent_;
   bool verify_robot_model_;
   std::atomic<bool> stop_requested_{false};
 
+  std::thread rsi_thread_;
+  std::mutex data_mutex_;
+  std::atomic<bool> rsi_thread_active_{false};
+  std::atomic<bool> communication_established_{false};
+
   static constexpr std::chrono::milliseconds IDLE_SLEEP_DURATION{2};
   static constexpr std::chrono::milliseconds INIT_WAIT_DURATION{100};
   static constexpr std::chrono::seconds DRIVES_POWERED_TIMEOUT{10};
   static constexpr std::chrono::milliseconds DRIVES_POWERED_CHECK_INTERVAL{100};
   static constexpr std::int64_t READ_TIMEOUT_MS = 1'000;
+  static constexpr int64_t ACTIVATION_TIMEOUT_S = 30;
 };
 }  // namespace kuka_rsi_driver
 

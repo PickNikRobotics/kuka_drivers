@@ -91,6 +91,10 @@ public:
   void OnStatusUpdateReceived(
     const kuka::external::control::kss::eki::StatusUpdate & update) override
   {
+    std::cerr << "update.operation_mode_" << +static_cast<uint8_t>(static_cast<double>(update.operation_mode_)) << "\n";
+    std::cerr << "operation mode expected" << +static_cast<uint8_t>(kuka::external::control::OperationMode::EXT) << "\n";
+    
+    std::cerr << "Status update received!!!!!!" << std::endl;
     if (first_update_)
     {
       hw_interface_->initialize_command_interfaces(
