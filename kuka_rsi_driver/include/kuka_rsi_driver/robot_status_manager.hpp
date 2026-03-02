@@ -71,6 +71,7 @@ public:
 
   bool IsOperationModeExt()
   {
+    std::cerr << "operation mode: " << operation_mode_ << std::endl;
     return static_cast<uint8_t>(operation_mode_) ==
            static_cast<uint8_t>(kuka::external::control::OperationMode::EXT);
   }
@@ -80,6 +81,7 @@ public:
   bool IsEmergencyStopActive() { return static_cast<bool>(emergency_stop_); }
 
 private:
+  // TODO(henrygerardmoore/danwahl): fix this whole file
   double control_mode_ = 0.0;
   double cycle_time_ = 0.0;
   double drives_powered_ = 0.0;

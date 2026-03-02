@@ -202,16 +202,64 @@ CallbackReturn KukaEkiRsiHardwareInterface::on_cleanup(const rclcpp_lifecycle::S
 
 CallbackReturn KukaEkiRsiHardwareInterface::on_activate(const rclcpp_lifecycle::State &)
 {
+  for (std::size_t i = 0; i < 100; ++i) {
+    status_manager_.UpdateStateInterfaces();
+    if (CheckActivation()) {
+      std::cerr << "Made it past CheckActivation on iteration " << i << std::endl;
+      rsi_thread_ = std::thread(&KukaEkiRsiHardwareInterface::RSIThreadLoop, this);
+
+      // Wait for RSI communication to establish
+      const auto start_time2 = std::chrono::steady_clock::now();
+      while (!communication_established_ && rsi_thread_active_)
+      {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+        const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                              std::chrono::steady_clock::now() - start_time2)
+                              .count();
+
+        if (elapsed > ACTIVATION_TIMEOUT_S)
+        {
+          RCLCPP_ERROR(logger_, "Timeout waiting for RSI communication to establish");
+          rsi_thread_active_ = false;
+          if (rsi_thread_.joinable())
+          {
+            rsi_thread_.join();
+          }
+          return CallbackReturn::FAILURE;
+        }
+      }
+
+      if (!communication_established_)
+      {
+        RCLCPP_ERROR(logger_, "Failed to establish RSI communication");
+        if (rsi_thread_.joinable())
+        {
+          rsi_thread_.join();
+        }
+        return CallbackReturn::FAILURE;
+      }
+
+      RCLCPP_INFO(logger_, "Hardware interface activated and RSI communication established!");
+      return CallbackReturn::SUCCESS;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  return CallbackReturn::FAILURE;
+}
+
+bool KukaEkiRsiHardwareInterface::CheckActivation() {
+
   if (status_manager_.IsEmergencyStopActive())
   {
     RCLCPP_ERROR(logger_, "Emergency stop is active. Cannot activate hardware interface.");
-    return CallbackReturn::FAILURE;
+    return false;
   }
 
   if (!status_manager_.IsKrcInExtMode())
   {
     RCLCPP_ERROR(logger_, "KRC not in EXT. Switch to EXT to activate.");
-    return CallbackReturn::FAILURE;
+    return false;
   }
 
   if (!status_manager_.DrivesPowered())
@@ -230,7 +278,7 @@ CallbackReturn KukaEkiRsiHardwareInterface::on_activate(const rclcpp_lifecycle::
         KukaEkiRsiHardwareInterface::DRIVES_POWERED_TIMEOUT)
       {
         RCLCPP_ERROR(logger_, "Timeout waiting for drives to power on. Check robot state.");
-        return CallbackReturn::FAILURE;
+        return false;
       }
       status_manager_.UpdateStateInterfaces();
       std::this_thread::sleep_for(KukaEkiRsiHardwareInterface::DRIVES_POWERED_CHECK_INTERVAL);
@@ -238,14 +286,13 @@ CallbackReturn KukaEkiRsiHardwareInterface::on_activate(const rclcpp_lifecycle::
     RCLCPP_INFO(logger_, "Drives successfully powered on.");
   }
 
-  const auto control_mode =
-    static_cast<kuka::external::control::ControlMode>(hw_control_mode_command_);
+  const auto control_mode = kuka::external::control::ControlMode::JOINT_POSITION_CONTROL;
 
   kuka::external::control::Status control_status = robot_ptr_->StartControlling(control_mode);
   if (control_status.return_code == kuka::external::control::ReturnCode::ERROR)
   {
     RCLCPP_ERROR(logger_, "Starting external control failed: %s", control_status.message);
-    return CallbackReturn::FAILURE;
+    return false;
   }
 
   prev_control_mode_ = static_cast<kuka_drivers_core::ControlMode>(hw_control_mode_command_);
@@ -254,43 +301,7 @@ CallbackReturn KukaEkiRsiHardwareInterface::on_activate(const rclcpp_lifecycle::
   communication_established_ = false;
   rsi_thread_active_ = true;
   last_read_time_.reset();
-
-  rsi_thread_ = std::thread(&KukaEkiRsiHardwareInterface::RSIThreadLoop, this);
-
-  // Wait for RSI communication to establish
-  const auto start_time2 = std::chrono::steady_clock::now();
-  while (!communication_established_ && rsi_thread_active_)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-    const auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
-                           std::chrono::steady_clock::now() - start_time2)
-                           .count();
-
-    if (elapsed > ACTIVATION_TIMEOUT_S)
-    {
-      RCLCPP_ERROR(logger_, "Timeout waiting for RSI communication to establish");
-      rsi_thread_active_ = false;
-      if (rsi_thread_.joinable())
-      {
-        rsi_thread_.join();
-      }
-      return CallbackReturn::ERROR;
-    }
-  }
-
-  if (!communication_established_)
-  {
-    RCLCPP_ERROR(logger_, "Failed to establish RSI communication");
-    if (rsi_thread_.joinable())
-    {
-      rsi_thread_.join();
-    }
-    return CallbackReturn::ERROR;
-  }
-
-  RCLCPP_INFO(logger_, "Hardware interface activated and RSI communication established!");
-  return CallbackReturn::SUCCESS;
+  return true;
 }
 
 CallbackReturn KukaEkiRsiHardwareInterface::on_deactivate(const rclcpp_lifecycle::State &)

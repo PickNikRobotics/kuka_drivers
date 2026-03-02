@@ -93,6 +93,8 @@ private:
     std::string reason = "";
   };
 
+  bool CheckActivation();
+
   KUKA_RSI_DRIVER_LOCAL bool ConnectToController();
 
   KUKA_RSI_DRIVER_LOCAL void Read(const int64_t request_timeout);
