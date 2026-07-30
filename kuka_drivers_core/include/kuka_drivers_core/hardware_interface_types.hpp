@@ -15,6 +15,8 @@
 #ifndef KUKA_DRIVERS_CORE__HARDWARE_INTERFACE_TYPES_HPP_
 #define KUKA_DRIVERS_CORE__HARDWARE_INTERFACE_TYPES_HPP_
 
+#include <string>
+
 namespace hardware_interface
 {
 /* Custom interfaces */
@@ -34,6 +36,27 @@ static constexpr char CONFIG_PREFIX[] = "runtime_config";
 static constexpr char FRI_STATE_PREFIX[] = "fri_state";
 // Constant defining prefix for states
 static constexpr char STATE_PREFIX[] = "state";
+
+// True for a valid I/O component name: either the bare IO_PREFIX, or "<prefix>_gpio".
+//
+// The prefixed form exists for control systems driving more than one arm. ros2_control
+// does not namespace interface names by hardware component, so if two arms each declared
+// a component called "gpio" they would export colliding "gpio/O1" interfaces and one
+// side's would be dropped. Naming them "left_gpio" / "right_gpio" keeps them distinct.
+//
+// A hardware interface that validates with this MUST export its I/O interfaces under the
+// declared component name (info_.gpios[0].name), not under IO_PREFIX, or the collision
+// simply reappears at export time.
+inline bool IsIoComponentName(const std::string & name)
+{
+  if (name == IO_PREFIX)
+  {
+    return true;
+  }
+  const std::string suffix = std::string("_") + IO_PREFIX;
+  return name.size() > suffix.size() &&
+         name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
+}
 
 /* Configuration interfaces */
 // Constant defining control_mode configuration interface

@@ -54,10 +54,14 @@ CallbackReturn KukaRSIHardwareInterface::on_init(const hardware_interface::Hardw
     return CallbackReturn::ERROR;
   }
   const auto & gpio = info_.gpios[0];
-  // Check gpio component name
-  if (gpio.name != hardware_interface::IO_PREFIX)
+  // Check gpio component name. "<prefix>_gpio" is accepted so a multi-arm control system
+  // can give each side its own component; the interfaces are exported below under the
+  // declared name rather than IO_PREFIX, which is what keeps the two sides distinct.
+  if (!hardware_interface::IsIoComponentName(gpio.name))
   {
-    RCLCPP_FATAL(logger_, "expecting gpio component called \"gpio\" first");
+    RCLCPP_FATAL(
+      logger_, "expecting a gpio component called \"gpio\" or \"<prefix>_gpio\", got \"%s\"",
+      gpio.name.c_str());
     return CallbackReturn::ERROR;
   }
   // TODO(Komaromi): Somehow check how many IOs are in the interfaces. RSI can receive and send
@@ -111,7 +115,7 @@ std::vector<hardware_interface::StateInterface> KukaRSIHardwareInterface::export
   for (size_t i = 0; i < info_.gpios[0].state_interfaces.size(); i++)
   {
     state_interfaces.emplace_back(
-      hardware_interface::IO_PREFIX, info_.gpios[0].state_interfaces[i].name, &hw_gpio_states_[i]);
+      info_.gpios[0].name, info_.gpios[0].state_interfaces[i].name, &hw_gpio_states_[i]);
   }
 
   return state_interfaces;
@@ -130,8 +134,7 @@ KukaRSIHardwareInterface::export_command_interfaces()
   for (size_t i = 0; i < info_.gpios[0].command_interfaces.size(); i++)
   {
     command_interfaces.emplace_back(
-      hardware_interface::IO_PREFIX, info_.gpios[0].command_interfaces[i].name,
-      &hw_gpio_commands_[i]);
+      info_.gpios[0].name, info_.gpios[0].command_interfaces[i].name, &hw_gpio_commands_[i]);
   }
 
   return command_interfaces;
