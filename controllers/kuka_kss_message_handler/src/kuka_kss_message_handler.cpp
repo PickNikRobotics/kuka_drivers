@@ -22,14 +22,26 @@
 namespace kuka_controllers
 {
 
+CallbackReturn KssMessageHandler::on_init()
+{
+  prefix_ = auto_declare<std::string>("prefix", "");
+  status_only_ = auto_declare<bool>("status_only", false);
+  return CallbackReturn::SUCCESS;
+}
+
 InterfaceConfig KssMessageHandler::command_interface_configuration() const
 {
   InterfaceConfig config;
+  if (status_only_)
+  {
+    config.type = controller_interface::interface_configuration_type::NONE;
+    return config;
+  }
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   config.names.emplace_back(
-    std::string{hardware_interface::CONFIG_PREFIX} + "/" + hardware_interface::DRIVE_STATE);
+    prefix_ + hardware_interface::CONFIG_PREFIX + "/" + hardware_interface::DRIVE_STATE);
   config.names.emplace_back(
-    std::string{hardware_interface::CONFIG_PREFIX} + "/" + hardware_interface::CYCLE_TIME);
+    prefix_ + hardware_interface::CONFIG_PREFIX + "/" + hardware_interface::CYCLE_TIME);
   return config;
 }
 
@@ -47,7 +59,7 @@ InterfaceConfig KssMessageHandler::state_interface_configuration() const
 
   for (const auto & interface : state_interfaces)
   {
-    config.names.emplace_back(std::string{hardware_interface::STATE_PREFIX} + "/" + interface);
+    config.names.emplace_back(prefix_ + hardware_interface::STATE_PREFIX + "/" + interface);
   }
 
   return config;
@@ -55,6 +67,25 @@ InterfaceConfig KssMessageHandler::state_interface_configuration() const
 
 CallbackReturn KssMessageHandler::on_configure(const rclcpp_lifecycle::State &)
 {
+  // Status
+  status_publisher_ = get_node()->create_publisher<kuka_driver_interfaces::msg::KssStatus>(
+    "~/status", rclcpp::SystemDefaultsQoS());
+  timer_ = get_node()->create_wall_timer(
+    STATUS_PUBLISH_INTERVAL,
+    [this]
+    {
+      status_.UpdateMessage();
+      status_publisher_->publish(status_.GetMessage());
+    });
+
+  if (status_only_)
+  {
+    RCLCPP_INFO(
+      get_node()->get_logger(), "KSS message handler configured (status only, prefix '%s')",
+      prefix_.c_str());
+    return CallbackReturn::SUCCESS;
+  }
+
   // Drive state
   drive_state_.store(0.0);
   drive_state_command_received_.store(false);
@@ -72,23 +103,18 @@ CallbackReturn KssMessageHandler::on_configure(const rclcpp_lifecycle::State &)
     "~/cycle_time", rclcpp::SystemDefaultsQoS(),
     std::bind(&KssMessageHandler::RsiCycleTimeChangedCallback, this, std::placeholders::_1));
 
-  // Status
-  status_publisher_ = get_node()->create_publisher<kuka_driver_interfaces::msg::KssStatus>(
-    "~/status", rclcpp::SystemDefaultsQoS());
-  timer_ = get_node()->create_wall_timer(
-    STATUS_PUBLISH_INTERVAL,
-    [this]
-    {
-      status_.UpdateMessage();
-      status_publisher_->publish(status_.GetMessage());
-    });
-
   RCLCPP_INFO(get_node()->get_logger(), "KSS message handler configured");
   return CallbackReturn::SUCCESS;
 }
 
 ReturnType KssMessageHandler::update(const rclcpp::Time &, const rclcpp::Duration &)
 {
+  if (status_only_)
+  {
+    status_ = state_interfaces_;
+    return ReturnType::OK;
+  }
+
   if (drive_state_command_received_.load())
   {
     command_interfaces_[0].set_value(drive_state_.load());

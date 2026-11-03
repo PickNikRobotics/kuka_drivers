@@ -17,6 +17,7 @@
 
 #include <array>
 #include <atomic>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -37,10 +38,7 @@ using ReturnType = controller_interface::return_type;
 class KssMessageHandler : public controller_interface::ControllerInterface
 {
 public:
-  KUKA_KSS_MESSAGE_HANDLER_PUBLIC CallbackReturn on_init() override
-  {
-    return CallbackReturn::SUCCESS;
-  }
+  KUKA_KSS_MESSAGE_HANDLER_PUBLIC CallbackReturn on_init() override;
 
   KUKA_KSS_MESSAGE_HANDLER_PUBLIC CallbackReturn
   on_activate(const rclcpp_lifecycle::State &) override
@@ -67,6 +65,13 @@ public:
 private:
   KUKA_KSS_MESSAGE_HANDLER_LOCAL void RsiCycleTimeChangedCallback(
     const std_msgs::msg::UInt8::SharedPtr msg);
+
+  // Per-arm interface prefix ("left_"); see InterfacePrefixFromIoComponentName.
+  std::string prefix_;
+  // Publish the status only: claim no command interfaces and create no command topics.
+  // Without it the handler writes its own cycle time (RSI_12MS until told otherwise) into
+  // the driver every cycle, which the driver forwards to the KRC whenever RSI is down.
+  bool status_only_ = false;
 
   // Drive state
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr drive_state_subscription_;

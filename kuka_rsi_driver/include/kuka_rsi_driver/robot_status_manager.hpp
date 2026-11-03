@@ -50,7 +50,9 @@ public:
     return *this;
   }
 
-  void RegisterStateInterfaces(std::vector<hardware_interface::StateInterface> & state_interfaces)
+  void RegisterStateInterfaces(
+    std::vector<hardware_interface::StateInterface> & state_interfaces,
+    const std::string & interface_prefix)
   {
     const std::vector<std::pair<std::string, double *>> interface_data = {
       {hardware_interface::CONTROL_MODE, &control_mode_},
@@ -65,7 +67,8 @@ public:
 
     for (const auto & [name, value_ptr] : interface_data)
     {
-      state_interfaces.emplace_back(hardware_interface::STATE_PREFIX, name, value_ptr);
+      state_interfaces.emplace_back(
+        interface_prefix + hardware_interface::STATE_PREFIX, name, value_ptr);
     }
   }
 
@@ -96,9 +99,11 @@ private:
 class StatusManager
 {
 public:
-  void RegisterStateInterfaces(std::vector<hardware_interface::StateInterface> & state_interfaces)
+  void RegisterStateInterfaces(
+    std::vector<hardware_interface::StateInterface> & state_interfaces,
+    const std::string & interface_prefix)
   {
-    status_interfaces_.RegisterStateInterfaces(state_interfaces);
+    status_interfaces_.RegisterStateInterfaces(state_interfaces, interface_prefix);
   }
 
   void SetStatusInterfaces(const kuka::external::control::kss::eki::StatusUpdate & update)

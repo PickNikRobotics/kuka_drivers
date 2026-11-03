@@ -67,6 +67,7 @@ CallbackReturn KukaEkiRsiHardwareInterface::on_init(const hardware_interface::Ha
       gpio.name.c_str());
     return CallbackReturn::ERROR;
   }
+  interface_prefix_ = hardware_interface::InterfacePrefixFromIoComponentName(gpio.name);
 
   // Save the mapping of GPIO states to commands
   for (const auto & command_interface : gpio.command_interfaces)
@@ -130,9 +131,10 @@ KukaEkiRsiHardwareInterface::export_state_interfaces()
   }
 
   state_interfaces.emplace_back(
-    hardware_interface::STATE_PREFIX, hardware_interface::SERVER_STATE, &server_state_);
+    interface_prefix_ + hardware_interface::STATE_PREFIX, hardware_interface::SERVER_STATE,
+    &server_state_);
 
-  status_manager_.RegisterStateInterfaces(state_interfaces);
+  status_manager_.RegisterStateInterfaces(state_interfaces, interface_prefix_);
 
   return state_interfaces;
 }
@@ -154,14 +156,16 @@ KukaEkiRsiHardwareInterface::export_command_interfaces()
       info_.gpios[0].name, info_.gpios[0].command_interfaces[i].name, &hw_gpio_commands_[i]);
   }
 
-  command_interfaces.emplace_back(
-    hardware_interface::CONFIG_PREFIX, hardware_interface::CONTROL_MODE, &hw_control_mode_command_);
+  const std::string config_prefix = interface_prefix_ + hardware_interface::CONFIG_PREFIX;
 
   command_interfaces.emplace_back(
-    hardware_interface::CONFIG_PREFIX, hardware_interface::DRIVE_STATE, &drives_enabled_command_);
+    config_prefix, hardware_interface::CONTROL_MODE, &hw_control_mode_command_);
 
   command_interfaces.emplace_back(
-    hardware_interface::CONFIG_PREFIX, hardware_interface::CYCLE_TIME, &cycle_time_command_);
+    config_prefix, hardware_interface::DRIVE_STATE, &drives_enabled_command_);
+
+  command_interfaces.emplace_back(
+    config_prefix, hardware_interface::CYCLE_TIME, &cycle_time_command_);
 
   return command_interfaces;
 }
