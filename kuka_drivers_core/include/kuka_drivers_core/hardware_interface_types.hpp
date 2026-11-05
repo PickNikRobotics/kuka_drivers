@@ -92,6 +92,10 @@ static constexpr char SAFETY_STATE[] = "safety_state";
 static constexpr char COMMAND_MODE[] = "command_mode";
 static constexpr char OPERATION_MODE[] = "operation_mode";
 static constexpr char ROBOT_STOPPED[] = "robot_stopped";
+// True only for an arm backed by mock_components/GenericSystem. Real KUKA
+// hardware exports this as false so status consumers can distinguish an
+// intentionally mocked arm from a disconnected one.
+static constexpr char IS_MOCK[] = "is_mock";
 static constexpr char DRIVE_STATE[] = "drive_state";
 static constexpr char OVERLAY_TYPE[] = "overlay_type";
 static constexpr char TRACKING_PERFORMANCE[] = "tracking_performance";

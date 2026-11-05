@@ -55,7 +55,7 @@ InterfaceConfig KssMessageHandler::state_interface_configuration() const
     hardware_interface::DRIVES_POWERED,  hardware_interface::EMERGENCY_STOP,
     hardware_interface::GUARD_STOP,      hardware_interface::IN_MOTION,
     hardware_interface::MOTION_POSSIBLE, hardware_interface::OPERATION_MODE,
-    hardware_interface::ROBOT_STOPPED};
+    hardware_interface::ROBOT_STOPPED,   hardware_interface::IS_MOCK};
 
   for (const auto & interface : state_interfaces)
   {
