@@ -58,6 +58,18 @@ inline bool IsIoComponentName(const std::string & name)
          name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
+// The per-arm prefix carried by a valid I/O component name: "" for the bare IO_PREFIX,
+// "left_" for "left_gpio".
+//
+// The KSS state and runtime-config interfaces collide across arms exactly like the I/O
+// interfaces do, so a hardware interface exports them under this prefix ("left_state/...",
+// "left_runtime_config/..."), and the controllers that claim them take the same string as
+// their "prefix" parameter. A single-arm system keeps the bare upstream names.
+inline std::string InterfacePrefixFromIoComponentName(const std::string & name)
+{
+  return name.substr(0, name.size() - std::string(IO_PREFIX).size());
+}
+
 /* Configuration interfaces */
 // Constant defining control_mode configuration interface
 static constexpr char CONTROL_MODE[] = "control_mode";
@@ -80,6 +92,10 @@ static constexpr char SAFETY_STATE[] = "safety_state";
 static constexpr char COMMAND_MODE[] = "command_mode";
 static constexpr char OPERATION_MODE[] = "operation_mode";
 static constexpr char ROBOT_STOPPED[] = "robot_stopped";
+// True only for an arm backed by mock_components/GenericSystem. Real KUKA
+// hardware exports this as false so status consumers can distinguish an
+// intentionally mocked arm from a disconnected one.
+static constexpr char IS_MOCK[] = "is_mock";
 static constexpr char DRIVE_STATE[] = "drive_state";
 static constexpr char OVERLAY_TYPE[] = "overlay_type";
 static constexpr char TRACKING_PERFORMANCE[] = "tracking_performance";

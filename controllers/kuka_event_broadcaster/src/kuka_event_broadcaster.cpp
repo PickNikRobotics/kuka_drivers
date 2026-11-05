@@ -20,6 +20,8 @@ namespace kuka_controllers
 {
 controller_interface::CallbackReturn EventBroadcaster::on_init()
 {
+  // Per-arm interface prefix ("left_"); see InterfacePrefixFromIoComponentName.
+  prefix_ = auto_declare<std::string>("prefix", "");
   event_publisher_ = get_node()->create_publisher<std_msgs::msg::UInt8>(
     "~/hardware_event", rclcpp::SystemDefaultsQoS());
   return controller_interface::CallbackReturn::SUCCESS;
@@ -37,7 +39,7 @@ controller_interface::InterfaceConfiguration EventBroadcaster::state_interface_c
   controller_interface::InterfaceConfiguration config;
   config.type = controller_interface::interface_configuration_type::INDIVIDUAL;
   config.names.emplace_back(
-    std::string(hardware_interface::STATE_PREFIX) + "/" + hardware_interface::SERVER_STATE);
+    prefix_ + hardware_interface::STATE_PREFIX + "/" + hardware_interface::SERVER_STATE);
   return config;
 }
 
@@ -58,14 +60,20 @@ controller_interface::CallbackReturn EventBroadcaster::on_deactivate(
 }
 
 controller_interface::return_type EventBroadcaster::update(
-  const rclcpp::Time &, const rclcpp::Duration &)
+  const rclcpp::Time &, const rclcpp::Duration & period)
 {
+  // Publish on every change, and also republish the current event at a fixed interval:
+  // a subscriber that joins between changes (a status viewer, `ros2 topic echo`) would
+  // otherwise see nothing until the next fault, and the steady stream doubles as a
+  // heartbeat -- its absence means the controller, or the driver host, is gone.
+  since_last_publish_ = since_last_publish_ + period;
   auto current_event = static_cast<uint8_t>(state_interfaces_[0].get_value());
-  if (current_event != last_event_)
+  if (current_event != last_event_ || since_last_publish_ >= REPUBLISH_INTERVAL)
   {
     event_msg_.data = current_event;
     event_publisher_->publish(event_msg_);
     last_event_ = current_event;
+    since_last_publish_ = rclcpp::Duration(0, 0);
   }
   return controller_interface::return_type::OK;
 }

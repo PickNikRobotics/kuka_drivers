@@ -134,6 +134,10 @@ private:
 
   std::vector<int> gpio_states_to_commands_map_;
 
+  // Prepended to STATE_PREFIX / CONFIG_PREFIX on export; see
+  // InterfacePrefixFromIoComponentName.
+  std::string interface_prefix_;
+
   double hw_control_mode_command_;
   double server_state_;
   double drives_enabled_command_;

@@ -50,7 +50,9 @@ public:
     return *this;
   }
 
-  void RegisterStateInterfaces(std::vector<hardware_interface::StateInterface> & state_interfaces)
+  void RegisterStateInterfaces(
+    std::vector<hardware_interface::StateInterface> & state_interfaces,
+    const std::string & interface_prefix)
   {
     const std::vector<std::pair<std::string, double *>> interface_data = {
       {hardware_interface::CONTROL_MODE, &control_mode_},
@@ -61,11 +63,13 @@ public:
       {hardware_interface::IN_MOTION, &in_motion_},
       {hardware_interface::MOTION_POSSIBLE, &motion_possible_},
       {hardware_interface::OPERATION_MODE, &operation_mode_},
-      {hardware_interface::ROBOT_STOPPED, &robot_stopped_}};
+      {hardware_interface::ROBOT_STOPPED, &robot_stopped_},
+      {hardware_interface::IS_MOCK, &is_mock_}};
 
     for (const auto & [name, value_ptr] : interface_data)
     {
-      state_interfaces.emplace_back(hardware_interface::STATE_PREFIX, name, value_ptr);
+      state_interfaces.emplace_back(
+        interface_prefix + hardware_interface::STATE_PREFIX, name, value_ptr);
     }
   }
 
@@ -91,14 +95,19 @@ private:
   double motion_possible_ = 0.0;
   double operation_mode_ = 0.0;
   double robot_stopped_ = 0.0;
+  // This class is used only by real KUKA hardware. Mock hardware supplies the
+  // same interface directly from its URDF with an initial value of 1.0.
+  double is_mock_ = 0.0;
 };
 
 class StatusManager
 {
 public:
-  void RegisterStateInterfaces(std::vector<hardware_interface::StateInterface> & state_interfaces)
+  void RegisterStateInterfaces(
+    std::vector<hardware_interface::StateInterface> & state_interfaces,
+    const std::string & interface_prefix)
   {
-    status_interfaces_.RegisterStateInterfaces(state_interfaces);
+    status_interfaces_.RegisterStateInterfaces(state_interfaces, interface_prefix);
   }
 
   void SetStatusInterfaces(const kuka::external::control::kss::eki::StatusUpdate & update)

@@ -25,3 +25,4 @@ bool in_motion
 bool motion_possible
 uint8 operation_mode
 bool robot_stopped
+bool is_mock

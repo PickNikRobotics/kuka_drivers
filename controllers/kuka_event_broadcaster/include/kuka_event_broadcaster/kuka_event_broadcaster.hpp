@@ -56,6 +56,9 @@ private:
   rclcpp::Publisher<std_msgs::msg::UInt8>::SharedPtr event_publisher_;
   std_msgs::msg::UInt8 event_msg_;
   int last_event_ = 0;
+  std::string prefix_;
+  rclcpp::Duration since_last_publish_{0, 0};
+  static inline const rclcpp::Duration REPUBLISH_INTERVAL{1, 0};
 };
 }  // namespace kuka_controllers
 #endif  // KUKA_EVENT_BROADCASTER__KUKA_EVENT_BROADCASTER_HPP_
